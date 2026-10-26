@@ -1,0 +1,1055 @@
+name: Build Maya APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write project files
+        run: |
+          mkdir -p .
+          cat > settings.gradle.kts <<'MAYA_EOF_0'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MayaAI"
+          include(":app")
+          MAYA_EOF_0
+          mkdir -p .
+          cat > build.gradle.kts <<'MAYA_EOF_1'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          MAYA_EOF_1
+          mkdir -p .
+          cat > gradle.properties <<'MAYA_EOF_2'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          MAYA_EOF_2
+          mkdir -p app
+          cat > app/build.gradle.kts <<'MAYA_EOF_3'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.maya.ai"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.maya.ai"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              // API key এনক্রিপ্ট করে ফোনে সংরক্ষণের জন্য
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+          }
+          MAYA_EOF_3
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'MAYA_EOF_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@android:drawable/ic_btn_speak_now"
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".FloatingBallService"
+                      android:exported="false"
+                      android:foregroundServiceType="microphone" />
+
+                  <service
+                      android:name=".MayaAccessibilityService"
+                      android:exported="false"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          MAYA_EOF_4
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'MAYA_EOF_5'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/accessibility_desc"
+              android:notificationTimeout="100" />
+          MAYA_EOF_5
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'MAYA_EOF_6'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Maya AI</string>
+              <string name="accessibility_desc">মায়া আপনার ভয়েস কমান্ড অনুযায়ী স্ক্রিন পড়ে ট্যাপ, টাইপ, স্ক্রল, হোম ও ব্যাক করে ফোন চালায়।</string>
+          </resources>
+          MAYA_EOF_6
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/Prefs.kt <<'MAYA_EOF_7'
+          package com.maya.ai
+
+          import android.content.Context
+          import android.content.SharedPreferences
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
+
+          /** API key ও সেটিংস এনক্রিপ্টেড অবস্থায় ফোনে সংরক্ষণ করে। */
+          object Prefs {
+              @Volatile private var cached: SharedPreferences? = null
+
+              private fun sp(c: Context): SharedPreferences {
+                  cached?.let { return it }
+                  synchronized(this) {
+                      cached?.let { return it }
+                      val app = c.applicationContext
+                      val key = MasterKey.Builder(app).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+                      val p = EncryptedSharedPreferences.create(
+                          app, "maya_secure", key,
+                          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                      )
+                      cached = p
+                      return p
+                  }
+              }
+
+              fun apiKey(c: Context): String = sp(c).getString("api_key", "") ?: ""
+              fun setApiKey(c: Context, v: String) = sp(c).edit().putString("api_key", v.trim()).apply()
+
+              fun model(c: Context): String = sp(c).getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
+              fun setModel(c: Context, v: String) = sp(c).edit().putString("model", v.trim()).apply()
+
+              /** "bn-BD" অথবা "en-US" */
+              fun lang(c: Context): String = sp(c).getString("lang", "bn-BD") ?: "bn-BD"
+              fun setLang(c: Context, v: String) = sp(c).edit().putString("lang", v).apply()
+          }
+          MAYA_EOF_7
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/GeminiClient.kt <<'MAYA_EOF_8'
+          package com.maya.ai
+
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          /** Google Gemini REST API ক্লায়েন্ট (নিজের API key দিয়ে)। */
+          object GeminiClient {
+
+              /** JSON আউটপুট চেয়ে একবার কল করে প্রথম টেক্সট রিটার্ন করে। ব্যাকগ্রাউন্ড থ্রেডে চালাতে হবে। */
+              fun generate(apiKey: String, model: String, system: String, user: String): String {
+                  val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+                  val conn = url.openConnection() as HttpURLConnection
+                  try {
+                      conn.requestMethod = "POST"
+                      conn.connectTimeout = 20_000
+                      conn.readTimeout = 60_000
+                      conn.doOutput = true
+                      conn.setRequestProperty("Content-Type", "application/json")
+                      conn.setRequestProperty("x-goog-api-key", apiKey)
+
+                      val body = JSONObject()
+                          .put(
+                              "systemInstruction",
+                              JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system)))
+                          )
+                          .put(
+                              "contents",
+                              JSONArray().put(
+                                  JSONObject().put("role", "user")
+                                      .put("parts", JSONArray().put(JSONObject().put("text", user)))
+                              )
+                          )
+                          .put(
+                              "generationConfig",
+                              JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2)
+                          )
+
+                      conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                      if (code !in 200..299) throw IOException("Gemini HTTP $code: ${text.take(300)}")
+
+                      return JSONObject(text)
+                          .getJSONArray("candidates").getJSONObject(0)
+                          .getJSONObject("content").getJSONArray("parts")
+                          .getJSONObject(0).getString("text")
+                  } finally {
+                      conn.disconnect()
+                  }
+              }
+          }
+          MAYA_EOF_8
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/MayaAccessibilityService.kt <<'MAYA_EOF_9'
+          package com.maya.ai
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.graphics.Rect
+          import android.os.Bundle
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+
+          /**
+           * ফোন কন্ট্রোলের মূল সার্ভিস: স্ক্রিন পড়া, ক্লিক, টাইপ, স্ক্রল, হোম/ব্যাক।
+           * ইউজারকে সেটিংসে গিয়ে নিজ হাতে এটি চালু করতে হয়।
+           */
+          class MayaAccessibilityService : AccessibilityService() {
+
+              companion object {
+                  @Volatile var instance: MayaAccessibilityService? = null
+                  private const val MAX_NODES = 120
+              }
+
+              private val nodes = ArrayList<AccessibilityNodeInfo>()
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              // ---------- স্ক্রিন পড়া ----------
+
+              @Synchronized
+              fun dumpScreen(): String {
+                  nodes.clear()
+                  val root = rootInActiveWindow ?: return "(screen unavailable)"
+                  val sb = StringBuilder("package=${root.packageName}\n")
+                  walk(root, sb)
+                  return sb.toString()
+              }
+
+              private fun walk(n: AccessibilityNodeInfo?, sb: StringBuilder) {
+                  if (n == null || !n.isVisibleToUser || nodes.size >= MAX_NODES) return
+                  val label = (n.text ?: n.contentDescription ?: n.hintText)?.toString()?.trim().orEmpty()
+                  if (label.isNotEmpty() || n.isClickable || n.isEditable) {
+                      val kinds = ArrayList<String>()
+                      if (n.isEditable) kinds.add("input")
+                      if (n.isClickable) kinds.add("click")
+                      if (n.isScrollable) kinds.add("scroll")
+                      if (n.isChecked) kinds.add("checked")
+                      if (kinds.isEmpty()) kinds.add("text")
+                      sb.append("[").append(nodes.size).append("] ")
+                          .append(kinds.joinToString("|")).append(" \"")
+                          .append(label.replace("\n", " ").take(80)).append("\"\n")
+                      nodes.add(n)
+                  }
+                  for (i in 0 until n.childCount) walk(n.getChild(i), sb)
+              }
+
+              @Synchronized
+              fun labelOf(index: Int): String {
+                  val n = nodes.getOrNull(index) ?: return ""
+                  return (n.text ?: n.contentDescription ?: "").toString()
+              }
+
+              // ---------- অ্যাকশন ----------
+
+              @Synchronized
+              fun clickIndex(index: Int): Boolean {
+                  val n = nodes.getOrNull(index) ?: return false
+                  var cur: AccessibilityNodeInfo? = n
+                  var depth = 0
+                  while (cur != null && depth < 6) {
+                      if (cur.isClickable && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                      cur = cur.parent
+                      depth++
+                  }
+                  val r = Rect()
+                  n.getBoundsInScreen(r)
+                  return tap(r.centerX().toFloat(), r.centerY().toFloat())
+              }
+
+              @Synchronized
+              fun typeText(index: Int, text: String): Boolean {
+                  val target = if (index >= 0) nodes.getOrNull(index) else findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                  target ?: return false
+                  target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                  val args = Bundle()
+                  args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                  return target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+              }
+
+              fun scroll(direction: String): Boolean {
+                  val m = resources.displayMetrics
+                  val x = m.widthPixels / 2f
+                  val top = m.heightPixels * 0.30f
+                  val bottom = m.heightPixels * 0.70f
+                  // "down" = নিচের কনটেন্ট দেখতে আঙুল ওপরে টানা
+                  return if (direction == "up") swipe(x, top, x, bottom) else swipe(x, bottom, x, top)
+              }
+
+              fun back() = performGlobalAction(GLOBAL_ACTION_BACK)
+              fun home() = performGlobalAction(GLOBAL_ACTION_HOME)
+              fun recents() = performGlobalAction(GLOBAL_ACTION_RECENTS)
+              fun notifications() = performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+
+              fun openApp(name: String): Boolean {
+                  val pm = packageManager
+                  val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                  val apps = pm.queryIntentActivities(query, 0)
+                  val q = name.trim().lowercase()
+                  if (q.isEmpty()) return false
+                  fun label(i: android.content.pm.ResolveInfo) = i.loadLabel(pm).toString().lowercase()
+                  val match = apps.firstOrNull { label(it) == q }
+                      ?: apps.firstOrNull { label(it).contains(q) }
+                      ?: apps.firstOrNull { label(it).length > 2 && q.contains(label(it)) }
+                      ?: return false
+                  val launch = pm.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return false
+                  launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  startActivity(launch)
+                  return true
+              }
+
+              // ---------- জেসচার ----------
+
+              private fun tap(x: Float, y: Float): Boolean {
+                  val p = Path().apply { moveTo(x, y) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build()
+                  return dispatchGesture(g, null, null)
+              }
+
+              private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float): Boolean {
+                  val p = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 350)).build()
+                  return dispatchGesture(g, null, null)
+              }
+          }
+          MAYA_EOF_9
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/Agent.kt <<'MAYA_EOF_10'
+          package com.maya.ai
+
+          import android.content.Context
+          import org.json.JSONArray
+          import org.json.JSONObject
+
+          /**
+           * এজেন্ট লুপ: স্ক্রিন পড়ো → Gemini-কে জিজ্ঞেস করো → একটি অ্যাকশন চালাও → পুনরাবৃত্তি।
+           * কাজ শেষ হলে বা সীমা ছুঁলে থামে।
+           */
+          class Agent(
+              private val ctx: Context,
+              private val speak: (String) -> Unit
+          ) {
+              @Volatile var cancelled = false
+
+              companion object {
+                  private const val MAX_STEPS = 15
+
+                  /** পেমেন্ট/টাকা পাঠানো/মুছে ফেলার মতো ঝুঁকিপূর্ণ বাটনে ক্লিক সফটওয়্যার-স্তরে আটকানো হয়। */
+                  private val DANGEROUS = Regex(
+                      "(pay now|confirm payment|send money|transfer|cash out|cashout|delete account|factory reset|" +
+                          "পেমেন্ট|টাকা পাঠান|সেন্ড মানি|ক্যাশ আউট|মুছে ফেল)",
+                      RegexOption.IGNORE_CASE
+                  )
+
+                  private const val SYSTEM = """
+          You are Maya, an assistant that operates an Android phone for its owner by reading the screen's accessibility tree and choosing exactly ONE action per step.
+
+          Reply with ONLY one JSON object, no prose. Allowed actions:
+          {"action":"open_app","app":"<app name as shown on launcher>"}
+          {"action":"click","index":<number from screen list>}
+          {"action":"type","index":<number of input field, or -1 for the focused field>,"text":"<text>"}
+          {"action":"scroll","direction":"up"|"down"}
+          {"action":"back"} {"action":"home"} {"action":"recents"} {"action":"notifications"}
+          {"action":"wait","seconds":<1-5>}
+          {"action":"done","speech":"<short spoken result for the user>"}
+          {"action":"ask","speech":"<question or refusal spoken to the user>"}
+
+          Rules:
+          - Elements are listed as [index] kinds "label". Use only indexes from the CURRENT screen list.
+          - Take small steps. After opening an app or clicking, the next screen will be shown to you.
+          - Use "done" as soon as the user's request is fulfilled. Put the answer or a short confirmation in speech.
+          - Use "ask" if you need information, are stuck, or the task involves payments, money transfer, PINs, OTPs, passwords, or deleting data. Never enter or reveal secrets. Tell the user to do that part themselves.
+          - Only send messages or make calls when the user's command explicitly asks for it.
+          - Write "speech" in the same language as the user's command (usually Bangla). Keep it under 25 words.
+          """
+              }
+
+              fun run(command: String) {
+                  val svc = MayaAccessibilityService.instance
+                  if (svc == null) {
+                      speak("অ্যাক্সেসিবিলিটি সার্ভিস চালু নেই। আগে এটি চালু করুন।")
+                      return
+                  }
+                  val key = Prefs.apiKey(ctx)
+                  if (key.isBlank()) {
+                      speak("আগে অ্যাপে Gemini API key সেভ করুন।")
+                      return
+                  }
+                  val model = Prefs.model(ctx)
+                  val history = StringBuilder()
+
+                  for (step in 1..MAX_STEPS) {
+                      if (cancelled) return
+                      val screen = svc.dumpScreen()
+                      val prompt = "User command: $command\n\nHistory so far:\n" +
+                          (if (history.isEmpty()) "(none)" else history.toString()) +
+                          "\n\nCurrent screen:\n$screen"
+
+                      val raw = try {
+                          GeminiClient.generate(key, model, SYSTEM, prompt)
+                      } catch (e: Exception) {
+                          speak("ইন্টারনেট বা API সমস্যা হয়েছে।")
+                          return
+                      }
+                      if (cancelled) return
+
+                      val json = parse(raw)
+                      if (json == null) {
+                          history.append("step $step: invalid JSON from model\n")
+                          continue
+                      }
+                      val action = json.optString("action")
+                      var result = "ok"
+
+                      when (action) {
+                          "done", "ask" -> {
+                              speak(json.optString("speech", "ঠিক আছে"))
+                              return
+                          }
+                          "open_app" -> {
+                              val app = json.optString("app")
+                              result = if (svc.openApp(app)) "opened $app" else "app not found: $app"
+                          }
+                          "click" -> {
+                              val i = json.optInt("index", -1)
+                              val label = svc.labelOf(i)
+                              if (DANGEROUS.containsMatchIn(label)) {
+                                  speak("এটি আর্থিক বা ঝুঁকিপূর্ণ কাজ, তাই আমি করব না। আপনি নিজে নিশ্চিত করুন।")
+                                  return
+                              }
+                              result = if (svc.clickIndex(i)) "clicked [$i] $label" else "click failed on [$i]"
+                          }
+                          "type" -> {
+                              val i = json.optInt("index", -1)
+                              val text = json.optString("text")
+                              result = if (svc.typeText(i, text)) "typed" else "type failed"
+                          }
+                          "scroll" -> result = if (svc.scroll(json.optString("direction", "down"))) "scrolled" else "scroll failed"
+                          "back" -> svc.back()
+                          "home" -> svc.home()
+                          "recents" -> svc.recents()
+                          "notifications" -> svc.notifications()
+                          "wait" -> {
+                              val s = json.optInt("seconds", 1).coerceIn(1, 5)
+                              sleep(s * 1000L)
+                          }
+                          else -> result = "unknown action"
+                      }
+                      history.append("step $step: $action ${json.toString().take(120)} -> $result\n")
+                      sleep(1100) // স্ক্রিন স্থির হতে সময় দিন
+                  }
+                  speak("কাজটি শেষ করতে পারিনি। আরেকবার চেষ্টা করুন।")
+              }
+
+              private fun sleep(ms: Long) {
+                  try { Thread.sleep(ms) } catch (_: InterruptedException) { cancelled = true }
+              }
+
+              private fun parse(raw: String): JSONObject? {
+                  var t = raw.trim()
+                  if (t.startsWith("```")) {
+                      t = t.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+                  }
+                  return try {
+                      if (t.startsWith("[")) JSONArray(t).optJSONObject(0) else JSONObject(t)
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+          }
+          MAYA_EOF_10
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/FloatingBallService.kt <<'MAYA_EOF_11'
+          package com.maya.ai
+
+          import android.Manifest
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.pm.ServiceInfo
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.WindowManager
+          import android.widget.TextView
+          import java.util.Locale
+          import java.util.concurrent.Executors
+          import kotlin.math.abs
+
+          /**
+           * স্ক্রিনের ওপর ভাসমান বল। বলে ট্যাপ করুন → কথা বলুন → মায়া কাজ করবে।
+           * বল টেনে সরানো যায়। কাজ চলার সময় ট্যাপ করলে কাজ থামে।
+           */
+          class FloatingBallService : Service() {
+
+              companion object {
+                  const val ACTION_STOP = "com.maya.ai.STOP"
+                  const val ACTION_RUN = "com.maya.ai.RUN"
+                  const val EXTRA_TEXT = "text"
+                  private const val CHANNEL = "maya_channel"
+                  private const val NOTIF_ID = 1
+                  @Volatile var running = false
+              }
+
+              private enum class State { IDLE, LISTENING, WORKING }
+
+              private lateinit var wm: WindowManager
+              private lateinit var lp: WindowManager.LayoutParams
+              private var ball: TextView? = null
+              private var recognizer: SpeechRecognizer? = null
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private val main = Handler(Looper.getMainLooper())
+              private val exec = Executors.newSingleThreadExecutor()
+              @Volatile private var agent: Agent? = null
+              private var state = State.IDLE
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  running = true
+                  startAsForeground()
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  addBall()
+                  initTts()
+                  initRecognizer()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
+                      ACTION_RUN -> {
+                          val t = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+                          if (t.isNotBlank()) main.post { runCommand(t) }
+                      }
+                  }
+                  return START_STICKY
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  agent?.cancelled = true
+                  try { ball?.let { wm.removeView(it) } } catch (_: Exception) {}
+                  recognizer?.destroy()
+                  tts?.shutdown()
+                  exec.shutdownNow()
+                  super.onDestroy()
+              }
+
+              // ---------- ফোরগ্রাউন্ড নোটিফিকেশন ----------
+
+              private fun startAsForeground() {
+                  val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(
+                      NotificationChannel(CHANNEL, "Maya", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  val stop = PendingIntent.getService(
+                      this, 0,
+                      Intent(this, FloatingBallService::class.java).setAction(ACTION_STOP),
+                      PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val n = Notification.Builder(this, CHANNEL)
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("মায়া জেগে আছে")
+                      .setContentText("ভাসমান বলে ট্যাপ করে কথা বলুন")
+                      .addAction(Notification.Action.Builder(null, "বন্ধ করুন", stop).build())
+                      .setOngoing(true)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  } else {
+                      startForeground(NOTIF_ID, n)
+                  }
+              }
+
+              // ---------- ভাসমান বল ----------
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun addBall() {
+                  val size = dp(64)
+                  val v = TextView(this).apply {
+                      text = "🎙"
+                      textSize = 26f
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.WHITE)
+                      elevation = dp(8).toFloat()
+                  }
+                  ball = v
+                  paint(Color.parseColor("#1E88E5"))
+
+                  lp = WindowManager.LayoutParams(
+                      size, size,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = dp(16)
+                      y = dp(220)
+                  }
+
+                  var startX = 0; var startY = 0
+                  var touchX = 0f; var touchY = 0f
+                  var moved = false
+                  v.setOnTouchListener { view, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              startX = lp.x; startY = lp.y
+                              touchX = e.rawX; touchY = e.rawY
+                              moved = false
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (e.rawX - touchX).toInt()
+                              val dy = (e.rawY - touchY).toInt()
+                              if (abs(dx) > 10 || abs(dy) > 10) moved = true
+                              lp.x = startX + dx
+                              lp.y = startY + dy
+                              wm.updateViewLayout(view, lp)
+                              true
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (!moved) onBallTap()
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+                  wm.addView(v, lp)
+              }
+
+              private fun paint(color: Int) {
+                  ball?.background = GradientDrawable().apply {
+                      shape = GradientDrawable.OVAL
+                      setColor(color)
+                      setStroke(dp(3), Color.parseColor("#00E5FF"))
+                  }
+              }
+
+              private fun setState(s: State) {
+                  state = s
+                  paint(
+                      when (s) {
+                          State.IDLE -> Color.parseColor("#1E88E5")      // নীল
+                          State.LISTENING -> Color.parseColor("#43A047") // সবুজ
+                          State.WORKING -> Color.parseColor("#FB8C00")   // কমলা
+                      }
+                  )
+              }
+
+              private fun onBallTap() {
+                  when (state) {
+                      State.IDLE -> startListening()
+                      State.LISTENING -> recognizer?.stopListening()
+                      State.WORKING -> {
+                          agent?.cancelled = true
+                          tts?.stop()
+                          setState(State.IDLE)
+                      }
+                  }
+              }
+
+              // ---------- ভয়েস ইনপুট / আউটপুট ----------
+
+              private fun initTts() {
+                  tts = TextToSpeech(this) { status ->
+                      if (status == TextToSpeech.SUCCESS) {
+                          val loc = Locale.forLanguageTag(Prefs.lang(this))
+                          val r = tts?.setLanguage(loc)
+                          if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                              tts?.setLanguage(Locale.US)
+                          }
+                          ttsReady = true
+                      }
+                  }
+              }
+
+              private fun speak(text: String) {
+                  if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maya")
+              }
+
+              private fun initRecognizer() {
+                  if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+                  recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+                      setRecognitionListener(object : RecognitionListener {
+                          override fun onResults(results: Bundle?) {
+                              val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                  ?.firstOrNull().orEmpty()
+                              if (t.isBlank()) setState(State.IDLE) else runCommand(t)
+                          }
+                          override fun onError(error: Int) { setState(State.IDLE) }
+                          override fun onReadyForSpeech(params: Bundle?) {}
+                          override fun onBeginningOfSpeech() {}
+                          override fun onRmsChanged(rmsdB: Float) {}
+                          override fun onBufferReceived(buffer: ByteArray?) {}
+                          override fun onEndOfSpeech() {}
+                          override fun onPartialResults(partialResults: Bundle?) {}
+                          override fun onEvent(eventType: Int, params: Bundle?) {}
+                      })
+                  }
+              }
+
+              private fun startListening() {
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      speak("মাইক্রোফোন পারমিশন দিন।")
+                      return
+                  }
+                  val r = recognizer
+                  if (r == null) {
+                      speak("এই ফোনে স্পিচ রিকগনিশন পাওয়া যায়নি।")
+                      return
+                  }
+                  tts?.stop()
+                  val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, Prefs.lang(this@FloatingBallService))
+                      putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                  }
+                  setState(State.LISTENING)
+                  r.startListening(i)
+              }
+
+              // ---------- কমান্ড চালানো ----------
+
+              private fun runCommand(text: String) {
+                  setState(State.WORKING)
+                  val a = Agent(this) { speak(it) }
+                  agent = a
+                  exec.execute {
+                      try {
+                          a.run(text)
+                      } catch (e: Exception) {
+                          speak("একটি সমস্যা হয়েছে।")
+                      } finally {
+                          main.post { setState(State.IDLE) }
+                      }
+                  }
+              }
+          }
+          MAYA_EOF_11
+          mkdir -p app/src/main/java/com/maya/ai
+          cat > app/src/main/java/com/maya/ai/MainActivity.kt <<'MAYA_EOF_12'
+          package com.maya.ai
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.View
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          /** সেটআপ স্ক্রিন: পারমিশন কন্ট্রোল সেন্টার + API key + বল চালু/বন্ধ। */
+          class MainActivity : Activity() {
+
+              private lateinit var root: LinearLayout
+              private lateinit var permBox: LinearLayout
+
+              private val bg = Color.parseColor("#0B1220")
+              private val card = Color.parseColor("#111B2E")
+              private val cyan = Color.parseColor("#00E5FF")
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(24), dp(16), dp(24))
+                  }
+                  setContentView(ScrollView(this).apply {
+                      setBackgroundColor(bg)
+                      addView(root)
+                  })
+                  buildUi()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  renderPermissions()
+              }
+
+              // ---------- UI ----------
+
+              private fun text(s: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+                  text = s; textSize = size; setTextColor(color)
+                  if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
+              }
+
+              private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
+                  text = label
+                  setOnClickListener { onClick() }
+              }
+
+              private fun buildUi() {
+                  root.addView(text("Maya AI", 28f, cyan, true))
+                  root.addView(text("আপনার ভয়েসে ফোন চালানো AI", 14f, Color.LTGRAY))
+
+                  root.addView(text("\nপারমিশন কন্ট্রোল সেন্টার", 18f, Color.parseColor("#FFC107"), true))
+                  permBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  root.addView(permBox)
+
+                  root.addView(text("\nGemini সেটিংস", 18f, Color.parseColor("#FFC107"), true))
+                  root.addView(text("aistudio.google.com থেকে ফ্রি API key নিন", 12f, Color.LTGRAY))
+
+                  val key = EditText(this).apply {
+                      hint = "Gemini API key"
+                      setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setText(Prefs.apiKey(this@MainActivity))
+                  }
+                  val model = EditText(this).apply {
+                      hint = "Model (যেমন gemini-2.5-flash)"
+                      setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
+                      setText(Prefs.model(this@MainActivity))
+                  }
+                  root.addView(key)
+                  root.addView(model)
+
+                  val langBtn = button(langLabel()) {}
+                  langBtn.setOnClickListener {
+                      val next = if (Prefs.lang(this) == "bn-BD") "en-US" else "bn-BD"
+                      Prefs.setLang(this, next)
+                      langBtn.text = langLabel()
+                  }
+                  root.addView(langBtn)
+                  root.addView(button("Save") {
+                      Prefs.setApiKey(this, key.text.toString())
+                      if (model.text.isNotBlank()) Prefs.setModel(this, model.text.toString())
+                      Toast.makeText(this, "সেভ হয়েছে", Toast.LENGTH_SHORT).show()
+                  })
+
+                  root.addView(text("\nমায়া চালু করুন", 18f, Color.parseColor("#FFC107"), true))
+                  root.addView(button("▶ ভাসমান বল চালু করুন") { startBall() })
+                  root.addView(button("■ বন্ধ করুন") {
+                      startService(Intent(this, FloatingBallService::class.java).setAction(FloatingBallService.ACTION_STOP))
+                  })
+
+                  root.addView(text("\nটেক্সট দিয়ে টেস্ট (মাইক ছাড়া)", 14f, Color.LTGRAY))
+                  val cmd = EditText(this).apply {
+                      hint = "যেমন: ইউটিউব খোলো"
+                      setHintTextColor(Color.GRAY); setTextColor(Color.WHITE)
+                  }
+                  root.addView(cmd)
+                  root.addView(button("চালান") {
+                      if (!ready()) return@button
+                      val i = Intent(this, FloatingBallService::class.java)
+                          .setAction(FloatingBallService.ACTION_RUN)
+                          .putExtra(FloatingBallService.EXTRA_TEXT, cmd.text.toString())
+                      startForegroundService(i)
+                  })
+              }
+
+              private fun langLabel() = "ভাষা: " + if (Prefs.lang(this) == "bn-BD") "বাংলা (bn-BD)" else "English (en-US)"
+
+              private fun permRow(title: String, desc: String, ok: Boolean, action: () -> Unit) {
+                  val box = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(card)
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      val lpm = LinearLayout.LayoutParams(-1, -2)
+                      lpm.topMargin = dp(8)
+                      layoutParams = lpm
+                  }
+                  box.addView(text((if (ok) "✅ " else "⬜ ") + title, 16f, if (ok) Color.parseColor("#00E676") else Color.WHITE, true))
+                  box.addView(text(desc, 12f, Color.LTGRAY))
+                  if (!ok) box.addView(button("অনুমতি দিন") { action() }.apply { gravity = Gravity.CENTER })
+                  permBox.addView(box)
+              }
+
+              // ---------- পারমিশন ----------
+
+              private fun micOk() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+              private fun overlayOk() = Settings.canDrawOverlays(this)
+              private fun a11yOk() = MayaAccessibilityService.instance != null
+              private fun notifOk() = Build.VERSION.SDK_INT < 33 ||
+                  checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+              private fun batteryOk() =
+                  (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
+
+              private fun renderPermissions() {
+                  permBox.removeAllViews()
+                  permRow("মাইক্রোফোন", "মায়ার সাথে কথা বলার জন্য", micOk()) {
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                  }
+                  permRow("ভাসমান বল (Overlay)", "অন্য অ্যাপের ওপরেও বল দেখানোর জন্য", overlayOk()) {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  }
+                  permRow(
+                      "অ্যাক্সেসিবিলিটি সার্ভিস",
+                      "স্ক্রিন পড়া, ট্যাপ, টাইপ, হোম/ব্যাকের জন্য। তালিকা থেকে Maya AI খুঁজে চালু করুন।",
+                      a11yOk()
+                  ) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                  permRow("নোটিফিকেশন", "মায়াকে ব্যাকগ্রাউন্ডে জাগ্রত রাখতে", notifOk()) {
+                      if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+                  }
+                  permRow("ব্যাটারি অপ্টিমাইজেশন বন্ধ", "ব্যাকগ্রাউন্ডে সার্ভিস যেন বন্ধ না হয়", batteryOk()) {
+                      startActivity(
+                          Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                      )
+                  }
+              }
+
+              override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
+                  super.onRequestPermissionsResult(code, perms, results)
+                  renderPermissions()
+              }
+
+              private fun ready(): Boolean {
+                  val missing = when {
+                      !micOk() -> "মাইক্রোফোন"
+                      !overlayOk() -> "ভাসমান বল (Overlay)"
+                      !a11yOk() -> "অ্যাক্সেসিবিলিটি"
+                      Prefs.apiKey(this).isBlank() -> "Gemini API key"
+                      else -> null
+                  }
+                  if (missing != null) {
+                      Toast.makeText(this, "আগে দিন: $missing", Toast.LENGTH_LONG).show()
+                      return false
+                  }
+                  return true
+              }
+
+              private fun startBall() {
+                  if (!ready()) return
+                  startForegroundService(Intent(this, FloatingBallService::class.java))
+                  Toast.makeText(this, "বল চালু হয়েছে। বলে ট্যাপ করে কথা বলুন।", Toast.LENGTH_LONG).show()
+              }
+          }
+          MAYA_EOF_12
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MayaAI-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
